@@ -8,4 +8,4 @@ directory = "./public"
 [[d1_databases]]
 binding = "DB"
 database_name = "donut-petition"
-database_id = "PASTE-YOUR-D1-DATABASE-ID-HERE"
+database_id = "9fc8cd52-6e1b-494d-96b8-281cb088317c"
