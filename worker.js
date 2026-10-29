@@ -1,9 +1,17 @@
 // Canteen Donut Petition - Cloudflare Worker (API only) + D1
 // The web pages are in public/ (index.html and admin.html), served as static assets.
+//
 // Bindings needed: DB (D1 database).
-// Secret needed for the admin panel: ADMIN_KEY (pick a long password).
+// Secret needed for the admin panel: ADMIN_KEY.
+// OPTIONAL, for email confirmation (needs a domain you own, verified in Resend):
+//   RESEND_API_KEY  - API key from resend.com
+//   FROM_EMAIL      - e.g. donuts@yourdomain.com
+// If those two are not set, signups count straight away (no confirmation email).
 
 const GOAL = 150;
+// Letters, numbers, dot, dash, underscore only. No "+" so nobody can sign many
+// times with name+1@..., name+2@... (they all land in the same inbox).
+const SCHOOL_EMAIL = /^[a-z0-9._-]+@salesian\.vic\.edu\.au$/;
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -16,6 +24,74 @@ function json(data, status = 200) {
   });
 }
 
+function html(body, status = 200) {
+  return new Response(body, {
+    status,
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Robots-Tag': 'noindex',
+    },
+  });
+}
+
+// ---------- Database setup (runs once per Worker start) ----------
+let schemaReady = false;
+async function ensureSchema(env) {
+  if (schemaReady) return;
+  // Older databases don't have these columns yet. Errors just mean "already there".
+  const alters = [
+    'ALTER TABLE signatures ADD COLUMN confirmed INTEGER NOT NULL DEFAULT 1',
+    'ALTER TABLE signatures ADD COLUMN confirm_token TEXT',
+  ];
+  for (const sql of alters) {
+    try { await env.DB.prepare(sql).run(); } catch (e) { /* column exists */ }
+  }
+  schemaReady = true;
+}
+
+function newToken() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function emailEnabled(env) {
+  return Boolean(env.RESEND_API_KEY && env.FROM_EMAIL);
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+async function sendConfirmEmail(env, origin, name, email, token) {
+  const link = origin + '/api/confirm?token=' + token;
+  const safeName = escapeHtml(name);
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer ' + env.RESEND_API_KEY,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from: env.FROM_EMAIL,
+      to: [email],
+      subject: 'Confirm your YES to donuts in the canteen',
+      text: 'Hi ' + name + ',\n\nTap this link to confirm your yes to donuts in the canteen:\n' + link + '\n\nIf you did not sign the petition, ignore this email.',
+      html:
+        '<div style="font-family:system-ui,Arial,sans-serif;max-width:480px">' +
+        '<h2>Donuts in the Canteen</h2>' +
+        '<p>Hi ' + safeName + ',</p>' +
+        '<p>Tap the button to confirm your YES.</p>' +
+        '<p><a href="' + link + '" style="display:inline-block;background:#ff7eb6;color:#3b0d24;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:700">Confirm my yes</a></p>' +
+        '<p style="color:#777;font-size:13px">If you did not sign the petition, ignore this email.</p>' +
+        '</div>',
+    }),
+  });
+  return res.ok;
+}
+
+// ---------- Admin auth ----------
 // Compare two strings without leaking length/position through timing.
 function safeEqual(a, b) {
   const enc = new TextEncoder();
@@ -87,14 +163,16 @@ export default {
 
     // ---------- Public ----------
     if (request.method === 'GET' && path === '/api/stats') {
-      const total = await env.DB.prepare('SELECT COUNT(*) AS c FROM signatures').first();
+      await ensureSchema(env);
+      const total = await env.DB.prepare('SELECT COUNT(*) AS c FROM signatures WHERE confirmed = 1').first();
       const recent = await env.DB.prepare(
-        'SELECT name, comment FROM signatures ORDER BY id DESC LIMIT 20'
+        'SELECT name, comment FROM signatures WHERE confirmed = 1 ORDER BY id DESC LIMIT 20'
       ).all();
       return json({ count: total.c, goal: GOAL, recent: recent.results });
     }
 
     if (request.method === 'POST' && path === '/api/sign') {
+      await ensureSchema(env);
       let body;
       try { body = await request.json(); } catch { return json({ error: 'Invalid request.' }, 400); }
 
@@ -106,29 +184,111 @@ export default {
       const comment = String(body.comment || '').trim().slice(0, 300);
 
       if (!name) return json({ error: 'Please enter your name.' }, 400);
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json({ error: 'Please enter a valid email.' }, 400);
+      if (!SCHOOL_EMAIL.test(email)) {
+        return json({ error: 'School email only. It must end in @salesian.vic.edu.au' }, 400);
+      }
 
+      const useEmail = emailEnabled(env);
+      const existing = await env.DB.prepare(
+        'SELECT id, confirmed FROM signatures WHERE email = ?'
+      ).bind(email).first();
+
+      // Already counted (or, with emails off, already in the list).
+      if (existing && (existing.confirmed || !useEmail)) {
+        return json({ error: 'That email has already said yes. Thank you!' }, 409);
+      }
+
+      // No confirmation emails set up: count the yes straight away.
+      if (!useEmail) {
+        try {
+          await env.DB.prepare(
+            'INSERT INTO signatures (name, email, comment, confirmed) VALUES (?, ?, ?, 1)'
+          ).bind(name, email, comment || null).run();
+        } catch (e) {
+          if (String(e).includes('UNIQUE')) {
+            return json({ error: 'That email has already said yes. Thank you!' }, 409);
+          }
+          return json({ error: 'Could not save your yes. Please try again.' }, 500);
+        }
+        return json({ ok: true });
+      }
+
+      // Confirmation emails on: save as pending, then email a link.
+      const token = newToken();
       try {
-        await env.DB.prepare(
-          'INSERT INTO signatures (name, email, comment) VALUES (?, ?, ?)'
-        ).bind(name, email, comment || null).run();
+        if (existing) {
+          // Signed before but never confirmed: refresh the details and resend.
+          await env.DB.prepare(
+            'UPDATE signatures SET name = ?, comment = ?, confirm_token = ? WHERE id = ?'
+          ).bind(name, comment || null, token, existing.id).run();
+        } else {
+          await env.DB.prepare(
+            'INSERT INTO signatures (name, email, comment, confirmed, confirm_token) VALUES (?, ?, ?, 0, ?)'
+          ).bind(name, email, comment || null, token).run();
+        }
       } catch (e) {
         if (String(e).includes('UNIQUE')) {
           return json({ error: 'That email has already said yes. Thank you!' }, 409);
         }
         return json({ error: 'Could not save your yes. Please try again.' }, 500);
       }
-      return json({ ok: true });
+
+      const sent = await sendConfirmEmail(env, url.origin, name, email, token);
+      if (!sent) {
+        return json({ error: 'Could not send the confirmation email. Please try again later.' }, 500);
+      }
+      return json({ ok: true, pending: true });
+    }
+
+    // The emailed link lands here. It shows a button (so mail scanners that
+    // pre-open links can't confirm by accident); pressing it sends a POST.
+    if (path === '/api/confirm' && request.method === 'GET') {
+      const token = url.searchParams.get('token') || '';
+      if (!/^[a-f0-9]{64}$/.test(token)) return Response.redirect(url.origin + '/?confirmed=0', 302);
+      return html(
+        '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">' +
+        '<meta name="robots" content="noindex"><title>Confirm your yes</title></head>' +
+        '<body style="font-family:system-ui,Arial,sans-serif;background:#fff6ea;color:#2b1a18;display:grid;place-items:center;min-height:100vh;margin:0">' +
+        '<form method="POST" action="/api/confirm" style="background:#fff;padding:32px;border-radius:16px;box-shadow:0 6px 24px rgba(74,44,42,.12);text-align:center;max-width:380px">' +
+        '<h2 style="margin-top:0;color:#4a2c2a">Donuts in the Canteen</h2>' +
+        '<p>One last step. Press the button to count your YES.</p>' +
+        '<input type="hidden" name="token" value="' + token + '">' +
+        '<button type="submit" style="width:100%;padding:14px;border:0;border-radius:12px;background:#ff7eb6;color:#3b0d24;font-size:1.05rem;font-weight:700;cursor:pointer">Confirm my yes</button>' +
+        '</form></body></html>'
+      );
+    }
+
+    if (path === '/api/confirm' && request.method === 'POST') {
+      await ensureSchema(env);
+      let token = '';
+      try {
+        const form = await request.formData();
+        token = String(form.get('token') || '');
+      } catch (e) {}
+      if (!/^[a-f0-9]{64}$/.test(token)) return Response.redirect(url.origin + '/?confirmed=0', 303);
+      const res = await env.DB.prepare(
+        'UPDATE signatures SET confirmed = 1, confirm_token = NULL WHERE confirm_token = ? AND confirmed = 0'
+      ).bind(token).run();
+      const changed = res.meta && res.meta.changes > 0;
+      return Response.redirect(url.origin + '/?confirmed=' + (changed ? '1' : '0'), 303);
     }
 
     // ---------- Admin (needs ADMIN_KEY) ----------
     if (path === '/api/admin/list' && request.method === 'GET') {
       const denied = await checkAdmin(request, env);
       if (denied) return denied;
+      await ensureSchema(env);
       const rows = await env.DB.prepare(
-        'SELECT id, name, email, comment, created_at FROM signatures ORDER BY id DESC'
+        'SELECT id, name, email, comment, created_at, confirmed FROM signatures ORDER BY id DESC'
       ).all();
-      return json({ goal: GOAL, count: rows.results.length, rows: rows.results });
+      const confirmedCount = rows.results.filter(r => r.confirmed).length;
+      return json({
+        goal: GOAL,
+        count: confirmedCount,
+        pending: rows.results.length - confirmedCount,
+        emailOn: emailEnabled(env),
+        rows: rows.results,
+      });
     }
 
     if (path === '/api/admin/delete' && request.method === 'POST') {
