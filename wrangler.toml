@@ -1,0 +1,11 @@
+name = "donut-petition"
+main = "worker.js"
+compatibility_date = "2024-11-01"
+
+[assets]
+directory = "./public"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "donut-petition"
+database_id = "PASTE-YOUR-D1-DATABASE-ID-HERE"

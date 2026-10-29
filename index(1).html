@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Donuts in the Canteen</title>
+<meta name="description" content="Sign the petition: put donuts on the canteen menu.">
+<style>
+  :root { --pink:#ff7eb6; --choc:#4a2c2a; --cream:#fff6ea; --dough:#f2b872; --ink:#2b1a18; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--cream); color:var(--ink); line-height:1.5; }
+  header { background:var(--choc); color:var(--cream); text-align:center; padding:56px 20px 48px; }
+  .donut { width:96px; height:96px; margin:0 auto 12px; display:block; }
+  h1 { margin:0 0 8px; font-size:clamp(2rem,6vw,3.2rem); }
+  header p { margin:0 auto; max-width:620px; font-size:1.1rem; opacity:.9; }
+  main { max-width:960px; margin:-28px auto 60px; padding:0 16px; display:grid; gap:20px; grid-template-columns:1fr; }
+  @media (min-width:800px){ main { grid-template-columns: 1.2fr 1fr; } }
+  .card { background:#fff; border-radius:16px; padding:24px; box-shadow:0 6px 24px rgba(74,44,42,.12); }
+  h2 { margin-top:0; }
+  label { display:block; font-weight:600; margin:14px 0 4px; }
+  input, textarea { width:100%; padding:11px 12px; border:2px solid #e8d6c0; border-radius:10px; font:inherit; background:#fffdf9; }
+  input:focus, textarea:focus { outline:none; border-color:var(--pink); }
+  textarea { min-height:80px; resize:vertical; }
+  button { margin-top:18px; width:100%; padding:14px; border:0; border-radius:12px; background:var(--pink); color:#3b0d24; font-size:1.05rem; font-weight:700; cursor:pointer; }
+  button:hover { filter:brightness(.95); }
+  button:disabled { opacity:.6; cursor:wait; }
+  .hp { position:absolute; left:-9999px; height:0; overflow:hidden; }
+  .count { font-size:2.6rem; font-weight:800; color:var(--choc); }
+  .bar { height:14px; background:#f1e2cf; border-radius:99px; overflow:hidden; margin:8px 0 4px; }
+  .bar > div { height:100%; width:0; background:linear-gradient(90deg,var(--pink),var(--dough)); transition:width .6s; }
+  .small { font-size:.9rem; color:#7a625e; }
+  .msg { margin-top:14px; padding:12px; border-radius:10px; display:none; }
+  .msg.ok { display:block; background:#e6f7e9; color:#1d5a2a; }
+  .msg.err { display:block; background:#fde8e8; color:#8a1f1f; }
+  ul { list-style:none; margin:0; padding:0; max-height:360px; overflow:auto; }
+  li { padding:10px 0; border-bottom:1px solid #f1e2cf; }
+  li b { color:var(--choc); }
+  li q { display:block; color:#6d5551; font-size:.95rem; }
+  footer { text-align:center; padding:0 16px 40px; color:#7a625e; font-size:.9rem; }
+</style>
+</head>
+<body>
+<header>
+  <svg class="donut" viewBox="0 0 100 100" aria-hidden="true">
+    <circle cx="50" cy="50" r="44" fill="#f2b872"/>
+    <circle cx="50" cy="50" r="38" fill="#ff7eb6"/>
+    <circle cx="50" cy="50" r="12" fill="#4a2c2a"/>
+    <g stroke-linecap="round" stroke-width="4">
+      <line x1="25" y1="38" x2="32" y2="34" stroke="#fff"/>
+      <line x1="68" y1="30" x2="76" y2="34" stroke="#ffe066"/>
+      <line x1="30" y1="68" x2="38" y2="72" stroke="#7fd6ff"/>
+      <line x1="70" y1="66" x2="76" y2="58" stroke="#fff"/>
+      <line x1="48" y1="22" x2="54" y2="26" stroke="#7fd6ff"/>
+      <line x1="52" y1="78" x2="58" y2="74" stroke="#ffe066"/>
+    </g>
+  </svg>
+  <h1>Donuts in the Canteen!</h1>
+  <p>We, the undersigned, petition for donuts to be sold in the canteen. Add your name and say YES.</p>
+</header>
+
+<main>
+  <section class="card">
+    <h2>Say yes to canteen donuts</h2>
+    <form id="form" novalidate>
+      <label for="name">Your name</label>
+      <input id="name" name="name" maxlength="80" autocomplete="name" required>
+
+      <label for="email">Email <span class="small">(never shown publicly)</span></label>
+      <input id="email" name="email" type="email" maxlength="120" autocomplete="email" required>
+
+      <label for="comment">Why donuts in the canteen? <span class="small">(optional)</span></label>
+      <textarea id="comment" name="comment" maxlength="300"></textarea>
+
+      <div class="hp"><label>Leave empty <input id="website" name="website" tabindex="-1" autocomplete="off"></label></div>
+
+      <button id="btn" type="submit">Yes! Put donuts in the canteen</button>
+      <div id="msg" class="msg" role="status"></div>
+    </form>
+  </section>
+
+  <aside>
+    <div class="card" style="margin-bottom:20px">
+      <div class="count" id="count">0</div>
+      <div style="font-weight:700;color:var(--choc)" id="yeslabel">people have said YES to donuts in the canteen</div>
+      <div class="bar"><div id="fill"></div></div>
+      <div class="small" id="goal"></div>
+    </div>
+    <div class="card">
+      <h2>Who said yes</h2>
+      <ul id="list"><li class="small">Loading...</li></ul>
+    </div>
+  </aside>
+</main>
+<footer>
+  Made with sprinkles.
+  <a href="/admin" title="Admin" aria-label="Admin" style="display:inline-block;vertical-align:middle;margin-left:6px;opacity:.55">
+    <svg width="16" height="16" viewBox="0 0 100 100" aria-hidden="true">
+      <circle cx="50" cy="50" r="44" fill="#f2b872"/>
+      <circle cx="50" cy="50" r="38" fill="#ff7eb6"/>
+      <circle cx="50" cy="50" r="12" fill="#fff6ea"/>
+    </svg>
+  </a>
+</footer>
+
+<script>
+const $ = id => document.getElementById(id);
+
+async function loadStats() {
+  try {
+    const r = await fetch('/api/stats');
+    const d = await r.json();
+    $('count').textContent = d.count.toLocaleString();
+    $('fill').style.width = Math.min(100, d.count / d.goal * 100) + '%';
+    $('yeslabel').textContent = (d.count === 1 ? 'person has' : 'people have') + ' said YES to donuts in the canteen';
+    $('goal').textContent = 'Goal: ' + d.goal.toLocaleString() + ' yes votes';
+    const list = $('list');
+    list.innerHTML = '';
+    if (!d.recent.length) {
+      const li = document.createElement('li');
+      li.className = 'small';
+      li.textContent = 'Be the first to say yes!';
+      list.appendChild(li);
+    }
+    d.recent.forEach(s => {
+      const li = document.createElement('li');
+      const b = document.createElement('b');
+      b.textContent = s.name;
+      li.appendChild(b);
+      if (s.comment) {
+        const q = document.createElement('q');
+        q.textContent = s.comment;
+        li.appendChild(q);
+      }
+      list.appendChild(li);
+    });
+  } catch (e) {}
+}
+
+$('form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const msg = $('msg');
+  msg.className = 'msg';
+  msg.textContent = '';
+  const body = {
+    name: $('name').value.trim(),
+    email: $('email').value.trim(),
+    comment: $('comment').value.trim(),
+    website: $('website').value
+  };
+  if (!body.name || !/^\S+@\S+\.\S+$/.test(body.email)) {
+    msg.className = 'msg err';
+    msg.textContent = 'Please enter your name and a valid email.';
+    return;
+  }
+  $('btn').disabled = true;
+  try {
+    const r = await fetch('/api/sign', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const d = await r.json();
+    if (r.ok) {
+      msg.className = 'msg ok';
+      msg.textContent = 'Thank you! Your YES has been counted.';
+      $('form').reset();
+      loadStats();
+    } else {
+      msg.className = 'msg err';
+      msg.textContent = d.error || 'Something went wrong.';
+    }
+  } catch (err) {
+    msg.className = 'msg err';
+    msg.textContent = 'Network error. Please try again.';
+  }
+  $('btn').disabled = false;
+});
+
+loadStats();
+</script>
+</body>
+</html>

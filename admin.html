@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Admin - Canteen Donuts</title>
+<style>
+  :root { --pink:#ff7eb6; --choc:#4a2c2a; --cream:#fff6ea; --ink:#2b1a18; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:var(--cream); color:var(--ink); }
+  .wrap { max-width:1000px; margin:0 auto; padding:24px 16px 60px; }
+  h1 { margin:0 0 4px; color:var(--choc); }
+  .card { background:#fff; border-radius:16px; padding:22px; box-shadow:0 6px 24px rgba(74,44,42,.12); margin-top:18px; }
+  input { padding:11px 12px; border:2px solid #e8d6c0; border-radius:10px; font:inherit; width:100%; background:#fffdf9; }
+  input:focus { outline:none; border-color:var(--pink); }
+  button { padding:11px 16px; border:0; border-radius:10px; background:var(--pink); color:#3b0d24; font-weight:700; font:inherit; font-weight:700; cursor:pointer; }
+  button.ghost { background:#f1e2cf; color:var(--choc); }
+  button.del { background:#fde8e8; color:#8a1f1f; padding:6px 10px; font-size:.85rem; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  .row > input { flex:1; min-width:200px; }
+  .err { color:#8a1f1f; margin-top:10px; min-height:1.2em; }
+  .stat { font-size:2.2rem; font-weight:800; color:var(--choc); }
+  .small { color:#7a625e; font-size:.9rem; }
+  .tablewrap { overflow-x:auto; margin-top:14px; }
+  table { width:100%; border-collapse:collapse; min-width:640px; }
+  th, td { text-align:left; padding:10px 8px; border-bottom:1px solid #f1e2cf; vertical-align:top; }
+  th { font-size:.85rem; text-transform:uppercase; letter-spacing:.04em; color:#7a625e; }
+  td.c { max-width:280px; color:#6d5551; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Admin: Canteen Donut Petition</h1>
+  <div class="small">Private. You need the admin key to see anything.</div>
+
+  <div class="card" id="login">
+    <form id="loginForm" class="row">
+      <input id="key" type="password" placeholder="Admin key" autocomplete="current-password" required>
+      <button type="submit">Log in</button>
+    </form>
+    <div class="err" id="loginErr"></div>
+  </div>
+
+  <div id="panel" hidden>
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <div>
+          <div class="stat" id="total">0</div>
+          <div class="small" id="goalText"></div>
+        </div>
+        <div class="row">
+          <button class="ghost" id="refresh" type="button">Refresh</button>
+          <button class="ghost" id="csv" type="button">Download CSV</button>
+          <button class="ghost" id="logout" type="button">Log out</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <input id="search" placeholder="Search name, email or comment...">
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>#</th><th>Name</th><th>Email</th><th>Comment</th><th>Signed (UTC)</th><th></th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <div class="small" id="empty" hidden style="margin-top:12px">Nobody here yet.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let KEY = '';
+let DATA = [];
+let LAST_ERR = '';
+
+try { KEY = sessionStorage.getItem('adminKey') || ''; } catch (e) {}
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, {
+    ...opts,
+    headers: { ...(opts.headers || {}), 'Authorization': 'Bearer ' + KEY, 'Content-Type': 'application/json' },
+  });
+  let d = {};
+  try { d = await r.json(); } catch (e) {}
+  return { ok: r.ok, status: r.status, data: d };
+}
+
+async function load() {
+  const res = await api('/api/admin/list');
+  if (!res.ok) { LAST_ERR = res.data.error || ''; return false; }
+  DATA = res.data.rows;
+  $('total').textContent = res.data.count + ' yes' + (res.data.count === 1 ? '' : ' votes');
+  $('goalText').textContent = 'Goal: ' + res.data.goal;
+  render();
+  return true;
+}
+
+function render() {
+  const q = $('search').value.trim().toLowerCase();
+  const body = $('rows');
+  body.innerHTML = '';
+  const list = DATA.filter(r =>
+    !q || [r.name, r.email, r.comment].join(' ').toLowerCase().includes(q)
+  );
+  $('empty').hidden = list.length > 0;
+  list.forEach(r => {
+    const tr = document.createElement('tr');
+    [r.id, r.name, r.email, r.comment || '', r.created_at].forEach((v, i) => {
+      const td = document.createElement('td');
+      td.textContent = v;
+      if (i === 3) td.className = 'c';
+      tr.appendChild(td);
+    });
+    const td = document.createElement('td');
+    const b = document.createElement('button');
+    b.className = 'del';
+    b.textContent = 'Delete';
+    b.onclick = async () => {
+      if (!confirm('Delete ' + r.name + ' (' + r.email + ')?')) return;
+      const res = await api('/api/admin/delete', { method: 'POST', body: JSON.stringify({ id: r.id }) });
+      if (res.ok) load();
+    };
+    td.appendChild(b);
+    tr.appendChild(td);
+    body.appendChild(tr);
+  });
+}
+
+function showPanel(on) {
+  $('login').hidden = on;
+  $('panel').hidden = !on;
+}
+
+$('loginForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  KEY = $('key').value;
+  $('loginErr').textContent = '';
+  if (await load()) {
+    try { sessionStorage.setItem('adminKey', KEY); } catch (e) {}
+    $('key').value = '';
+    showPanel(true);
+  } else {
+    KEY = '';
+    $('loginErr').textContent = LAST_ERR || 'Wrong key, or ADMIN_KEY is not set on the Worker yet.';
+  }
+});
+
+$('search').addEventListener('input', render);
+$('refresh').onclick = load;
+$('logout').onclick = () => {
+  KEY = '';
+  DATA = [];
+  try { sessionStorage.removeItem('adminKey'); } catch (e) {}
+  showPanel(false);
+};
+
+$('csv').onclick = () => {
+  const cell = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  const lines = ['id,name,email,comment,created_at'].concat(
+    DATA.map(r => [r.id, r.name, r.email, r.comment, r.created_at].map(cell).join(','))
+  );
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'canteen-donut-petition.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+
+if (KEY) {
+  load().then(ok => { if (ok) showPanel(true); else { KEY = ''; } });
+}
+</script>
+</body>
+</html>
