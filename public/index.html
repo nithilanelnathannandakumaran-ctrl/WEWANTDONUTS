@@ -63,6 +63,7 @@
 <main>
   <section class="card">
     <h2>Say yes to canteen donuts</h2>
+    <div id="paused" class="msg err" style="display:none">Signups are paused right now. Please check back later.</div>
     <form id="form" novalidate>
       <label for="name">Your name</label>
       <input id="name" name="name" maxlength="80" autocomplete="name" required>
@@ -106,6 +107,7 @@
 
 <script>
 const $ = id => document.getElementById(id);
+let PAUSED = false;
 
 async function loadStats() {
   try {
@@ -115,6 +117,9 @@ async function loadStats() {
     $('fill').style.width = Math.min(100, d.count / d.goal * 100) + '%';
     $('yeslabel').textContent = (d.count === 1 ? 'person has' : 'people have') + ' said YES to donuts in the canteen';
     $('goal').textContent = 'Goal: ' + d.goal.toLocaleString() + ' yes votes';
+    PAUSED = !!d.paused;
+    $('paused').style.display = PAUSED ? 'block' : 'none';
+    $('btn').disabled = PAUSED;
     const list = $('list');
     list.innerHTML = '';
     if (!d.recent.length) {
@@ -182,7 +187,7 @@ $('form').addEventListener('submit', async e => {
     msg.className = 'msg err';
     msg.textContent = 'Network error. Please try again.';
   }
-  $('btn').disabled = false;
+  $('btn').disabled = PAUSED;
 });
 
 (function () {
