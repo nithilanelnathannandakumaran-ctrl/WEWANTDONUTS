@@ -113,11 +113,30 @@ function safeEqual(a, b) {
   return diff === 0;
 }
 
+// To get into the admin page you need BOTH the secret ADMIN_KEY and one of these names.
+const ADMIN_NAMES = [
+  'jayden narayan',
+  'elnathan nandakumaran',
+  'olivia raphael',
+];
+
+function normName(s) {
+  return String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
 function isAdmin(request, env) {
   if (!env.ADMIN_KEY) return false;
   const h = request.headers.get('Authorization') || '';
-  if (!h.startsWith('Bearer ')) return false;
-  return safeEqual(h.slice(7), env.ADMIN_KEY);
+  const key = h.startsWith('Bearer ') ? h.slice(7) : '';
+
+  let rawName = request.headers.get('X-Admin-Name') || '';
+  try { rawName = decodeURIComponent(rawName); } catch (e) {}
+  const name = normName(rawName);
+
+  // Check both every time so the answer takes the same time either way.
+  const keyOk = safeEqual(key, env.ADMIN_KEY);
+  const nameOk = ADMIN_NAMES.some(n => safeEqual(n, name));
+  return keyOk && nameOk;
 }
 
 // Lockout: 3 wrong keys from the same IP blocks that IP for 15 minutes.
@@ -163,7 +182,7 @@ async function checkAdmin(request, env) {
     'INSERT INTO admin_attempts (ip, fails, locked_until) VALUES (?, ?, 0) ON CONFLICT(ip) DO UPDATE SET fails = excluded.fails, locked_until = 0'
   ).bind(ip, fails).run();
   const left = MAX_FAILS - fails;
-  return json({ error: 'Wrong key. ' + left + ' attempt' + (left === 1 ? '' : 's') + ' left.' }, 401);
+  return json({ error: 'Wrong name or key. ' + left + ' attempt' + (left === 1 ? '' : 's') + ' left.' }, 401);
 }
 
 export default {
