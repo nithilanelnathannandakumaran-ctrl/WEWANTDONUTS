@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <title>Admin - Canteen Donuts</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cpath fill='%23f2b872' fill-rule='evenodd' d='M6 50a44 44 0 1 0 88 0a44 44 0 1 0-88 0M39 50a11 11 0 1 0 22 0a11 11 0 1 0-22 0'/%3E%3Cpath fill='%235a2f1b' fill-rule='evenodd' d='M12 50a38 38 0 1 0 76 0a38 38 0 1 0-76 0M39 50a11 11 0 1 0 22 0a11 11 0 1 0-22 0'/%3E%3Cg stroke-linecap='round' stroke-width='5'%3E%3Cpath stroke='%23fff' d='M26 36l7-4M70 28l8 5M72 66l7-6'/%3E%3Cpath stroke='%23ffe066' d='M30 68l8 4M52 20l6 4'/%3E%3Cpath stroke='%237fd6ff' d='M48 80l7-3'/%3E%3C/g%3E%3C/svg%3E">
 <style>
   :root { --pink:#ff7eb6; --choc:#4a2c2a; --cream:#fff6ea; --ink:#2b1a18; }
   * { box-sizing:border-box; }
@@ -37,6 +38,7 @@
 
   <div class="card" id="login">
     <form id="loginForm" class="row">
+      <input id="name" type="text" placeholder="Your full name" autocomplete="off" required>
       <input id="key" type="password" placeholder="Admin key" autocomplete="current-password" required>
       <button type="submit">Log in</button>
     </form>
@@ -75,17 +77,26 @@
 <script>
 const $ = id => document.getElementById(id);
 let KEY = '';
+let NAME = '';
 let DATA = [];
 let LAST_ERR = '';
 let PAUSED = false;
 const statusOf = r => r.blocked ? 'Blocked' : (r.confirmed ? 'Confirmed' : 'Pending');
 
-try { KEY = sessionStorage.getItem('adminKey') || ''; } catch (e) {}
+try {
+  KEY = sessionStorage.getItem('adminKey') || '';
+  NAME = sessionStorage.getItem('adminName') || '';
+} catch (e) {}
 
 async function api(path, opts = {}) {
   const r = await fetch(path, {
     ...opts,
-    headers: { ...(opts.headers || {}), 'Authorization': 'Bearer ' + KEY, 'Content-Type': 'application/json' },
+    headers: {
+      ...(opts.headers || {}),
+      'Authorization': 'Bearer ' + KEY,
+      'X-Admin-Name': encodeURIComponent(NAME),
+      'Content-Type': 'application/json',
+    },
   });
   let d = {};
   try { d = await r.json(); } catch (e) {}
@@ -157,14 +168,20 @@ function showPanel(on) {
 $('loginForm').addEventListener('submit', async e => {
   e.preventDefault();
   KEY = $('key').value;
+  NAME = $('name').value.trim();
   $('loginErr').textContent = '';
   if (await load()) {
-    try { sessionStorage.setItem('adminKey', KEY); } catch (e) {}
+    try {
+      sessionStorage.setItem('adminKey', KEY);
+      sessionStorage.setItem('adminName', NAME);
+    } catch (e) {}
     $('key').value = '';
+    $('name').value = '';
     showPanel(true);
   } else {
     KEY = '';
-    $('loginErr').textContent = LAST_ERR || 'Wrong key, or ADMIN_KEY is not set on the Worker yet.';
+    NAME = '';
+    $('loginErr').textContent = LAST_ERR || 'Wrong name or key, or ADMIN_KEY is not set on the Worker yet.';
   }
 });
 
@@ -180,8 +197,12 @@ $('pause').onclick = async () => {
 };
 $('logout').onclick = () => {
   KEY = '';
+  NAME = '';
   DATA = [];
-  try { sessionStorage.removeItem('adminKey'); } catch (e) {}
+  try {
+    sessionStorage.removeItem('adminKey');
+    sessionStorage.removeItem('adminName');
+  } catch (e) {}
   showPanel(false);
 };
 
@@ -198,8 +219,8 @@ $('csv').onclick = () => {
   URL.revokeObjectURL(a.href);
 };
 
-if (KEY) {
-  load().then(ok => { if (ok) showPanel(true); else { KEY = ''; } });
+if (KEY && NAME) {
+  load().then(ok => { if (ok) showPanel(true); else { KEY = ''; NAME = ''; } });
 }
 </script>
 </body>
