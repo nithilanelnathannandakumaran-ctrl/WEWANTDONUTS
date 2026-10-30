@@ -51,6 +51,7 @@
           <div class="small" id="goalText"></div>
         </div>
         <div class="row">
+          <button id="pause" type="button">Pause signups</button>
           <button class="ghost" id="refresh" type="button">Refresh</button>
           <button class="ghost" id="csv" type="button">Download CSV</button>
           <button class="ghost" id="logout" type="button">Log out</button>
@@ -62,7 +63,7 @@
       <input id="search" placeholder="Search name, email or comment...">
       <div class="tablewrap">
         <table>
-          <thead><tr><th>#</th><th>Name</th><th>Email</th><th>Comment</th><th>Signed (UTC)</th><th></th></tr></thead>
+          <thead><tr><th>#</th><th>Name</th><th>Email</th><th>Comment</th><th>Signed (UTC)</th><th>Status</th><th></th></tr></thead>
           <tbody id="rows"></tbody>
         </table>
       </div>
@@ -76,6 +77,8 @@ const $ = id => document.getElementById(id);
 let KEY = '';
 let DATA = [];
 let LAST_ERR = '';
+let PAUSED = false;
+const statusOf = r => r.blocked ? 'Blocked' : (r.confirmed ? 'Confirmed' : 'Pending');
 
 try { KEY = sessionStorage.getItem('adminKey') || ''; } catch (e) {}
 
@@ -94,7 +97,13 @@ async function load() {
   if (!res.ok) { LAST_ERR = res.data.error || ''; return false; }
   DATA = res.data.rows;
   $('total').textContent = res.data.count + ' yes' + (res.data.count === 1 ? '' : ' votes');
-  $('goalText').textContent = 'Goal: ' + res.data.goal;
+  $('goalText').textContent = 'Goal: ' + res.data.goal +
+    (res.data.pending ? '  |  ' + res.data.pending + ' waiting to confirm their email' : '') +
+    (res.data.blocked ? '  |  ' + res.data.blocked + ' blocked' : '') +
+    (res.data.emailOn ? '' : '  |  confirmation emails are OFF') +
+    (res.data.paused ? '  |  SIGNUPS ARE PAUSED' : '');
+  PAUSED = !!res.data.paused;
+  $('pause').textContent = PAUSED ? 'Resume signups' : 'Pause signups';
   render();
   return true;
 }
@@ -109,13 +118,23 @@ function render() {
   $('empty').hidden = list.length > 0;
   list.forEach(r => {
     const tr = document.createElement('tr');
-    [r.id, r.name, r.email, r.comment || '', r.created_at].forEach((v, i) => {
+    [r.id, r.name, r.email, r.comment || '', r.created_at, statusOf(r)].forEach((v, i) => {
       const td = document.createElement('td');
       td.textContent = v;
       if (i === 3) td.className = 'c';
       tr.appendChild(td);
     });
     const td = document.createElement('td');
+    td.style.whiteSpace = 'nowrap';
+    const blk = document.createElement('button');
+    blk.className = 'ghost';
+    blk.style.cssText = 'padding:6px 10px;font-size:.85rem;margin-right:6px';
+    blk.textContent = r.blocked ? 'Unblock' : 'Block';
+    blk.onclick = async () => {
+      const res = await api('/api/admin/block', { method: 'POST', body: JSON.stringify({ id: r.id, blocked: !r.blocked }) });
+      if (res.ok) load();
+    };
+    td.appendChild(blk);
     const b = document.createElement('button');
     b.className = 'del';
     b.textContent = 'Delete';
@@ -151,6 +170,14 @@ $('loginForm').addEventListener('submit', async e => {
 
 $('search').addEventListener('input', render);
 $('refresh').onclick = load;
+$('pause').onclick = async () => {
+  const msg = PAUSED
+    ? 'Resume signups? People will be able to sign again.'
+    : 'Pause signups? Nobody can sign until you resume.';
+  if (!confirm(msg)) return;
+  const res = await api('/api/admin/pause', { method: 'POST', body: JSON.stringify({ paused: !PAUSED }) });
+  if (res.ok) load();
+};
 $('logout').onclick = () => {
   KEY = '';
   DATA = [];
@@ -160,8 +187,8 @@ $('logout').onclick = () => {
 
 $('csv').onclick = () => {
   const cell = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
-  const lines = ['id,name,email,comment,created_at'].concat(
-    DATA.map(r => [r.id, r.name, r.email, r.comment, r.created_at].map(cell).join(','))
+  const lines = ['id,name,email,comment,created_at,status'].concat(
+    DATA.map(r => [r.id, r.name, r.email, r.comment, r.created_at, statusOf(r)].map(cell).join(','))
   );
   const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
   const a = document.createElement('a');
