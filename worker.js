@@ -43,11 +43,21 @@ async function ensureSchema(env) {
   const alters = [
     'ALTER TABLE signatures ADD COLUMN confirmed INTEGER NOT NULL DEFAULT 1',
     'ALTER TABLE signatures ADD COLUMN confirm_token TEXT',
+    'ALTER TABLE signatures ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0',
   ];
   for (const sql of alters) {
     try { await env.DB.prepare(sql).run(); } catch (e) { /* column exists */ }
   }
+  await env.DB.prepare(
+    'CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)'
+  ).run();
   schemaReady = true;
+}
+
+// Admin can pause the whole petition (no new signups) and resume it later.
+async function isPaused(env) {
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'paused'").first();
+  return Boolean(row && row.value === '1');
 }
 
 function newToken() {
@@ -164,15 +174,18 @@ export default {
     // ---------- Public ----------
     if (request.method === 'GET' && path === '/api/stats') {
       await ensureSchema(env);
-      const total = await env.DB.prepare('SELECT COUNT(*) AS c FROM signatures WHERE confirmed = 1').first();
+      const total = await env.DB.prepare('SELECT COUNT(*) AS c FROM signatures WHERE confirmed = 1 AND blocked = 0').first();
       const recent = await env.DB.prepare(
-        'SELECT name, comment FROM signatures WHERE confirmed = 1 ORDER BY id DESC LIMIT 20'
+        'SELECT name, comment FROM signatures WHERE confirmed = 1 AND blocked = 0 ORDER BY id DESC LIMIT 20'
       ).all();
-      return json({ count: total.c, goal: GOAL, recent: recent.results });
+      return json({ count: total.c, goal: GOAL, paused: await isPaused(env), recent: recent.results });
     }
 
     if (request.method === 'POST' && path === '/api/sign') {
       await ensureSchema(env);
+      if (await isPaused(env)) {
+        return json({ error: 'Signups are paused right now. Please check back later.' }, 403);
+      }
       let body;
       try { body = await request.json(); } catch { return json({ error: 'Invalid request.' }, 400); }
 
@@ -190,8 +203,13 @@ export default {
 
       const useEmail = emailEnabled(env);
       const existing = await env.DB.prepare(
-        'SELECT id, confirmed FROM signatures WHERE email = ?'
+        'SELECT id, confirmed, blocked FROM signatures WHERE email = ?'
       ).bind(email).first();
+
+      // An admin blocked this email.
+      if (existing && existing.blocked) {
+        return json({ error: 'This email can not sign the petition.' }, 403);
+      }
 
       // Already counted (or, with emails off, already in the list).
       if (existing && (existing.confirmed || !useEmail)) {
@@ -279,13 +297,17 @@ export default {
       if (denied) return denied;
       await ensureSchema(env);
       const rows = await env.DB.prepare(
-        'SELECT id, name, email, comment, created_at, confirmed FROM signatures ORDER BY id DESC'
+        'SELECT id, name, email, comment, created_at, confirmed, blocked FROM signatures ORDER BY id DESC'
       ).all();
-      const confirmedCount = rows.results.filter(r => r.confirmed).length;
+      const confirmedCount = rows.results.filter(r => r.confirmed && !r.blocked).length;
+      const blockedCount = rows.results.filter(r => r.blocked).length;
+      const pendingCount = rows.results.filter(r => !r.confirmed && !r.blocked).length;
       return json({
         goal: GOAL,
         count: confirmedCount,
-        pending: rows.results.length - confirmedCount,
+        pending: pendingCount,
+        blocked: blockedCount,
+        paused: await isPaused(env),
         emailOn: emailEnabled(env),
         rows: rows.results,
       });
@@ -300,6 +322,34 @@ export default {
       if (!Number.isInteger(id)) return json({ error: 'Bad id.' }, 400);
       await env.DB.prepare('DELETE FROM signatures WHERE id = ?').bind(id).run();
       return json({ ok: true });
+    }
+
+    // Block or unblock one person. Blocked people are not counted or shown
+    // publicly, and can not sign again. Unblocking puts them back.
+    if (path === '/api/admin/block' && request.method === 'POST') {
+      const denied = await checkAdmin(request, env);
+      if (denied) return denied;
+      await ensureSchema(env);
+      let body;
+      try { body = await request.json(); } catch { return json({ error: 'Invalid request.' }, 400); }
+      const id = Number(body.id);
+      if (!Number.isInteger(id)) return json({ error: 'Bad id.' }, 400);
+      await env.DB.prepare('UPDATE signatures SET blocked = ? WHERE id = ?')
+        .bind(body.blocked ? 1 : 0, id).run();
+      return json({ ok: true });
+    }
+
+    // Pause or resume the whole petition.
+    if (path === '/api/admin/pause' && request.method === 'POST') {
+      const denied = await checkAdmin(request, env);
+      if (denied) return denied;
+      await ensureSchema(env);
+      let body;
+      try { body = await request.json(); } catch { return json({ error: 'Invalid request.' }, 400); }
+      await env.DB.prepare(
+        "INSERT INTO settings (key, value) VALUES ('paused', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+      ).bind(body.paused ? '1' : '0').run();
+      return json({ ok: true, paused: Boolean(body.paused) });
     }
 
     return new Response('Not found', { status: 404 });
