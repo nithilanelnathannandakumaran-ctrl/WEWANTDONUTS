@@ -8,7 +8,7 @@
 //   FROM_EMAIL      - e.g. donuts@yourdomain.com
 // If those two are not set, signups count straight away (no confirmation email).
 
-const GOAL = 150;
+const DEFAULT_GOAL = 100; // the admin can change the goal from the admin page
 // Letters, numbers, dot, dash, underscore only. No "+" so nobody can sign many
 // times with name+1@..., name+2@... (they all land in the same inbox).
 const SCHOOL_EMAIL = /^[a-z0-9._-]+@salesian\.vic\.edu\.au$/;
@@ -58,6 +58,13 @@ async function ensureSchema(env) {
 async function isPaused(env) {
   const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'paused'").first();
   return Boolean(row && row.value === '1');
+}
+
+// The goal number shown on the page. Set from the admin page, else the default.
+async function getGoal(env) {
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'goal'").first();
+  const n = row ? parseInt(row.value, 10) : NaN;
+  return Number.isInteger(n) && n >= 1 ? n : DEFAULT_GOAL;
 }
 
 function newToken() {
@@ -118,6 +125,8 @@ const ADMIN_NAMES = [
   'jayden narayan',
   'elnathan nandakumaran',
   'olivia raphael',
+  'mr bourbon',
+  'mr. bourbon',
 ];
 
 function normName(s) {
@@ -197,7 +206,7 @@ export default {
       const recent = await env.DB.prepare(
         'SELECT name, comment FROM signatures WHERE confirmed = 1 AND blocked = 0 ORDER BY id DESC LIMIT 20'
       ).all();
-      return json({ count: total.c, goal: GOAL, paused: await isPaused(env), recent: recent.results });
+      return json({ count: total.c, goal: await getGoal(env), paused: await isPaused(env), recent: recent.results });
     }
 
     if (request.method === 'POST' && path === '/api/sign') {
@@ -322,7 +331,7 @@ export default {
       const blockedCount = rows.results.filter(r => r.blocked).length;
       const pendingCount = rows.results.filter(r => !r.confirmed && !r.blocked).length;
       return json({
-        goal: GOAL,
+        goal: await getGoal(env),
         count: confirmedCount,
         pending: pendingCount,
         blocked: blockedCount,
@@ -341,6 +350,23 @@ export default {
       if (!Number.isInteger(id)) return json({ error: 'Bad id.' }, 400);
       await env.DB.prepare('DELETE FROM signatures WHERE id = ?').bind(id).run();
       return json({ ok: true });
+    }
+
+    // Change the goal number (how many people the petition is aiming for).
+    if (path === '/api/admin/goal' && request.method === 'POST') {
+      const denied = await checkAdmin(request, env);
+      if (denied) return denied;
+      await ensureSchema(env);
+      let body;
+      try { body = await request.json(); } catch { return json({ error: 'Invalid request.' }, 400); }
+      const goal = Number(body.goal);
+      if (!Number.isInteger(goal) || goal < 1 || goal > 100000) {
+        return json({ error: 'Goal must be a whole number from 1 to 100000.' }, 400);
+      }
+      await env.DB.prepare(
+        "INSERT INTO settings (key, value) VALUES ('goal', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+      ).bind(String(goal)).run();
+      return json({ ok: true, goal });
     }
 
     // Block or unblock one person. Blocked people are not counted or shown
