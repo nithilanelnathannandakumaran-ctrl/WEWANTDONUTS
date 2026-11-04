@@ -51,6 +51,11 @@
         <div>
           <div class="stat" id="total">0</div>
           <div class="small" id="goalText"></div>
+          <div class="row" style="margin-top:10px">
+            <label for="goalInput" class="small" style="margin:0">Goal:</label>
+            <input id="goalInput" type="number" min="1" max="100000" step="1" style="flex:none;min-width:0;width:110px">
+            <button class="ghost" id="goalSave" type="button">Set goal</button>
+          </div>
         </div>
         <div class="row">
           <button id="pause" type="button">Pause signups</button>
@@ -115,6 +120,7 @@ async function load() {
     (res.data.paused ? '  |  SIGNUPS ARE PAUSED' : '');
   PAUSED = !!res.data.paused;
   $('pause').textContent = PAUSED ? 'Resume signups' : 'Pause signups';
+  if (document.activeElement !== $('goalInput')) $('goalInput').value = res.data.goal;
   render();
   return true;
 }
@@ -187,6 +193,15 @@ $('loginForm').addEventListener('submit', async e => {
 
 $('search').addEventListener('input', render);
 $('refresh').onclick = load;
+$('goalSave').onclick = async () => {
+  const n = Number($('goalInput').value);
+  if (!Number.isInteger(n) || n < 1 || n > 100000) {
+    alert('Enter a whole number from 1 to 100000.');
+    return;
+  }
+  const res = await api('/api/admin/goal', { method: 'POST', body: JSON.stringify({ goal: n }) });
+  if (res.ok) load(); else alert(res.data.error || 'Could not save the goal.');
+};
 $('pause').onclick = async () => {
   const msg = PAUSED
     ? 'Resume signups? People will be able to sign again.'
