@@ -9,9 +9,69 @@
 // If those two are not set, signups count straight away (no confirmation email).
 
 const DEFAULT_GOAL = 100; // the admin can change the goal from the admin page
+
+// Every new signup waits for this one admin to approve it before it counts.
+// Set REQUIRE_APPROVAL to false to count signups straight away again.
+const REQUIRE_APPROVAL = true;
+const APPROVER = 'elnathan nandakumaran';
 // Letters, numbers, dot, dash, underscore only. No "+" so nobody can sign many
 // times with name+1@..., name+2@... (they all land in the same inbox).
 const SCHOOL_EMAIL = /^[a-z0-9._-]+@salesian\.vic\.edu\.au$/;
+
+// ---------- Name check ----------
+// Catches obvious fake names (keyboard mashing, "test", cartoon characters, numbers).
+// It can NOT know if a realistic name belongs to a real person.
+const NAME_ERROR = 'Please enter your real first and last name.';
+const VOWELS = 'aeiouyàáâäãåæèéêëìíîïòóôöõøùúûüœ';
+const BAD_WORDS = new Set([
+  'test', 'testing', 'fake', 'name', 'anonymous', 'anon', 'nobody', 'none', 'null',
+  'undefined', 'admin', 'donut', 'donuts', 'doughnut', 'user', 'student', 'person',
+  'fuck', 'shit', 'bitch', 'cunt', 'penis', 'vagina', 'poop', 'fart', 'butt',
+]);
+const MASHES = ['asdf', 'qwer', 'zxcv', 'hjkl', 'sdfg', 'dfgh', 'fghj', 'ghjk', 'xcvb', 'lkjh', 'poiu', 'mnbv'];
+const FAKE_NAMES = [
+  'john doe', 'jane doe', 'first last', 'your name', 'full name', 'no name', 'mickey mouse',
+  'donald duck', 'elon musk', 'bill gates', 'homer simpson', 'bart simpson', 'spongebob squarepants',
+  'darth vader', 'harry potter', 'santa claus', 'mr donut', 'big chungus', 'john cena',
+  'jeff bezos', 'mark zuckerberg', 'taylor swift', 'donald trump', 'joe biden',
+];
+
+// Returns an error message, or null if the name looks real.
+function validateName(raw) {
+  const name = String(raw || '').trim().replace(/\s+/g, ' ');
+  if (name.length < 3 || name.length > 60) return NAME_ERROR;
+
+  const words = name.split(' ');
+  if (words.length < 2 || words.length > 5) return NAME_ERROR;
+
+  // Letters only (hyphens, apostrophes and a full stop are fine: O'Brien, Smith-Jones)
+  if (!words.every(w => /^\p{L}[\p{L}'’.-]*$/u.test(w))) return NAME_ERROR;
+
+  const lower = name.toLowerCase();
+  if (FAKE_NAMES.includes(lower)) return NAME_ERROR;
+
+  const letters = words.map(w => w.replace(/[^\p{L}]/gu, '').toLowerCase());
+  if (letters.some(w => w.length === 0)) return NAME_ERROR;
+
+  // First and last name need at least 2 letters (a middle initial is fine)
+  if (letters[0].length < 2 || letters[letters.length - 1].length < 2) return NAME_ERROR;
+
+  // Same word repeated: "Sam Sam"
+  if (new Set(letters).size === 1) return NAME_ERROR;
+
+  // A letter 3+ times in a row: "Jaaaayden"
+  if (/(\p{L})\1\1/u.test(letters.join(' '))) return NAME_ERROR;
+
+  const vowelRe = new RegExp('[' + VOWELS + ']');
+  const consonantRunRe = new RegExp('[^' + VOWELS + ']{6,}', 'u');
+  for (const w of letters) {
+    if (BAD_WORDS.has(w)) return NAME_ERROR;
+    if (MASHES.some(m => w.includes(m))) return NAME_ERROR;
+    if (w.length >= 3 && !vowelRe.test(w)) return NAME_ERROR;   // "Bcdfg"
+    if (consonantRunRe.test(w)) return NAME_ERROR;               // "Kjhgfds"
+  }
+  return null;
+}
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -44,6 +104,7 @@ async function ensureSchema(env) {
     'ALTER TABLE signatures ADD COLUMN confirmed INTEGER NOT NULL DEFAULT 1',
     'ALTER TABLE signatures ADD COLUMN confirm_token TEXT',
     'ALTER TABLE signatures ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE signatures ADD COLUMN approved INTEGER NOT NULL DEFAULT 1',
   ];
   for (const sql of alters) {
     try { await env.DB.prepare(sql).run(); } catch (e) { /* column exists */ }
@@ -148,6 +209,24 @@ function isAdmin(request, env) {
   return keyOk && nameOk;
 }
 
+// True when the logged-in admin is the one person who approves signups.
+// (Only call this after the admin check has passed.)
+function isApprover(request) {
+  let rawName = request.headers.get('X-Admin-Name') || '';
+  try { rawName = decodeURIComponent(rawName); } catch (e) {}
+  return normName(rawName) === APPROVER;
+}
+
+// Stops other admins from touching a request that is still waiting for approval.
+async function guardWaiting(request, env, id) {
+  if (isApprover(request)) return null;
+  const row = await env.DB.prepare('SELECT approved FROM signatures WHERE id = ?').bind(id).first();
+  if (row && !row.approved) {
+    return json({ error: 'Only Elnathan Nandakumaran can handle approval requests.' }, 403);
+  }
+  return null;
+}
+
 // Lockout: 3 wrong keys from the same IP blocks that IP for 15 minutes.
 const MAX_FAILS = 3;
 const LOCK_MINUTES = 15;
@@ -202,9 +281,9 @@ export default {
     // ---------- Public ----------
     if (request.method === 'GET' && path === '/api/stats') {
       await ensureSchema(env);
-      const total = await env.DB.prepare('SELECT COUNT(*) AS c FROM signatures WHERE confirmed = 1 AND blocked = 0').first();
+      const total = await env.DB.prepare('SELECT COUNT(*) AS c FROM signatures WHERE confirmed = 1 AND approved = 1 AND blocked = 0').first();
       const recent = await env.DB.prepare(
-        'SELECT name, comment FROM signatures WHERE confirmed = 1 AND blocked = 0 ORDER BY id DESC LIMIT 20'
+        'SELECT name, comment FROM signatures WHERE confirmed = 1 AND approved = 1 AND blocked = 0 ORDER BY id DESC LIMIT 20'
       ).all();
       return json({ count: total.c, goal: await getGoal(env), paused: await isPaused(env), recent: recent.results });
     }
@@ -220,11 +299,12 @@ export default {
       // Honeypot: bots fill this in, humans never see it.
       if (body.website) return json({ ok: true });
 
-      const name = String(body.name || '').trim().slice(0, 80);
+      const name = String(body.name || '').trim().replace(/\s+/g, ' ').slice(0, 80);
       const email = String(body.email || '').trim().toLowerCase().slice(0, 120);
       const comment = String(body.comment || '').trim().slice(0, 300);
 
-      if (!name) return json({ error: 'Please enter your name.' }, 400);
+      const nameError = validateName(name);
+      if (nameError) return json({ error: nameError }, 400);
       if (!SCHOOL_EMAIL.test(email)) {
         return json({ error: 'School email only. It must end in @salesian.vic.edu.au' }, 400);
       }
@@ -248,15 +328,15 @@ export default {
       if (!useEmail) {
         try {
           await env.DB.prepare(
-            'INSERT INTO signatures (name, email, comment, confirmed) VALUES (?, ?, ?, 1)'
-          ).bind(name, email, comment || null).run();
+            'INSERT INTO signatures (name, email, comment, confirmed, approved) VALUES (?, ?, ?, 1, ?)'
+          ).bind(name, email, comment || null, REQUIRE_APPROVAL ? 0 : 1).run();
         } catch (e) {
           if (String(e).includes('UNIQUE')) {
             return json({ error: 'That email has already said yes. Thank you!' }, 409);
           }
           return json({ error: 'Could not save your yes. Please try again.' }, 500);
         }
-        return json({ ok: true });
+        return json({ ok: true, awaiting: REQUIRE_APPROVAL });
       }
 
       // Confirmation emails on: save as pending, then email a link.
@@ -269,8 +349,8 @@ export default {
           ).bind(name, comment || null, token, existing.id).run();
         } else {
           await env.DB.prepare(
-            'INSERT INTO signatures (name, email, comment, confirmed, confirm_token) VALUES (?, ?, ?, 0, ?)'
-          ).bind(name, email, comment || null, token).run();
+            'INSERT INTO signatures (name, email, comment, confirmed, confirm_token, approved) VALUES (?, ?, ?, 0, ?, ?)'
+          ).bind(name, email, comment || null, token, REQUIRE_APPROVAL ? 0 : 1).run();
         }
       } catch (e) {
         if (String(e).includes('UNIQUE')) {
@@ -324,20 +404,26 @@ export default {
       const denied = await checkAdmin(request, env);
       if (denied) return denied;
       await ensureSchema(env);
-      const rows = await env.DB.prepare(
-        'SELECT id, name, email, comment, created_at, confirmed, blocked FROM signatures ORDER BY id DESC'
+      const all = await env.DB.prepare(
+        'SELECT id, name, email, comment, created_at, confirmed, blocked, approved FROM signatures ORDER BY id DESC'
       ).all();
-      const confirmedCount = rows.results.filter(r => r.confirmed && !r.blocked).length;
-      const blockedCount = rows.results.filter(r => r.blocked).length;
-      const pendingCount = rows.results.filter(r => !r.confirmed && !r.blocked).length;
+      // Requests waiting for approval are only shown to the approver.
+      const approver = isApprover(request);
+      const rows = approver ? all.results : all.results.filter(r => r.approved);
+      const confirmedCount = rows.filter(r => r.confirmed && r.approved && !r.blocked).length;
+      const blockedCount = rows.filter(r => r.blocked).length;
+      const pendingCount = rows.filter(r => !r.confirmed && !r.blocked).length;
+      const awaitingCount = rows.filter(r => r.confirmed && !r.approved && !r.blocked).length;
       return json({
         goal: await getGoal(env),
         count: confirmedCount,
         pending: pendingCount,
+        awaiting: awaitingCount,
         blocked: blockedCount,
+        isApprover: approver,
         paused: await isPaused(env),
         emailOn: emailEnabled(env),
-        rows: rows.results,
+        rows,
       });
     }
 
@@ -348,7 +434,31 @@ export default {
       try { body = await request.json(); } catch { return json({ error: 'Invalid request.' }, 400); }
       const id = Number(body.id);
       if (!Number.isInteger(id)) return json({ error: 'Bad id.' }, 400);
+      const blockedByGuard = await guardWaiting(request, env, id);
+      if (blockedByGuard) return blockedByGuard;
       await env.DB.prepare('DELETE FROM signatures WHERE id = ?').bind(id).run();
+      return json({ ok: true });
+    }
+
+    // Approve a waiting request (or all of them). Only the approver can do this.
+    if (path === '/api/admin/approve' && request.method === 'POST') {
+      const denied = await checkAdmin(request, env);
+      if (denied) return denied;
+      if (!isApprover(request)) {
+        return json({ error: 'Only Elnathan Nandakumaran can approve requests.' }, 403);
+      }
+      await ensureSchema(env);
+      let body;
+      try { body = await request.json(); } catch { return json({ error: 'Invalid request.' }, 400); }
+      if (body.all) {
+        await env.DB.prepare(
+          'UPDATE signatures SET approved = 1 WHERE confirmed = 1 AND approved = 0 AND blocked = 0'
+        ).run();
+        return json({ ok: true });
+      }
+      const id = Number(body.id);
+      if (!Number.isInteger(id)) return json({ error: 'Bad id.' }, 400);
+      await env.DB.prepare('UPDATE signatures SET approved = 1 WHERE id = ?').bind(id).run();
       return json({ ok: true });
     }
 
@@ -379,6 +489,8 @@ export default {
       try { body = await request.json(); } catch { return json({ error: 'Invalid request.' }, 400); }
       const id = Number(body.id);
       if (!Number.isInteger(id)) return json({ error: 'Bad id.' }, 400);
+      const blockedByGuard = await guardWaiting(request, env, id);
+      if (blockedByGuard) return blockedByGuard;
       await env.DB.prepare('UPDATE signatures SET blocked = ? WHERE id = ?')
         .bind(body.blocked ? 1 : 0, id).run();
       return json({ ok: true });
