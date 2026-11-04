@@ -143,6 +143,44 @@
 const $ = id => document.getElementById(id);
 let PAUSED = false;
 
+// Same name check as the server, so people get an instant answer.
+const NAME_ERROR = 'Please enter your real first and last name.';
+const VOWELS = 'aeiouyàáâäãåæèéêëìíîïòóôöõøùúûüœ';
+const BAD_WORDS = new Set([
+  'test', 'testing', 'fake', 'name', 'anonymous', 'anon', 'nobody', 'none', 'null',
+  'undefined', 'admin', 'donut', 'donuts', 'doughnut', 'user', 'student', 'person',
+  'fuck', 'shit', 'bitch', 'cunt', 'penis', 'vagina', 'poop', 'fart', 'butt'
+]);
+const MASHES = ['asdf', 'qwer', 'zxcv', 'hjkl', 'sdfg', 'dfgh', 'fghj', 'ghjk', 'xcvb', 'lkjh', 'poiu', 'mnbv'];
+const FAKE_NAMES = [
+  'john doe', 'jane doe', 'first last', 'your name', 'full name', 'no name', 'mickey mouse',
+  'donald duck', 'elon musk', 'bill gates', 'homer simpson', 'bart simpson', 'spongebob squarepants',
+  'darth vader', 'harry potter', 'santa claus', 'mr donut', 'big chungus', 'john cena',
+  'jeff bezos', 'mark zuckerberg', 'taylor swift', 'donald trump', 'joe biden'
+];
+function validateName(raw) {
+  const name = String(raw || '').trim().replace(/\s+/g, ' ');
+  if (name.length < 3 || name.length > 60) return NAME_ERROR;
+  const words = name.split(' ');
+  if (words.length < 2 || words.length > 5) return NAME_ERROR;
+  if (!words.every(w => /^\p{L}[\p{L}'’.-]*$/u.test(w))) return NAME_ERROR;
+  if (FAKE_NAMES.includes(name.toLowerCase())) return NAME_ERROR;
+  const letters = words.map(w => w.replace(/[^\p{L}]/gu, '').toLowerCase());
+  if (letters.some(w => w.length === 0)) return NAME_ERROR;
+  if (letters[0].length < 2 || letters[letters.length - 1].length < 2) return NAME_ERROR;
+  if (new Set(letters).size === 1) return NAME_ERROR;
+  if (/(\p{L})\1\1/u.test(letters.join(' '))) return NAME_ERROR;
+  const vowelRe = new RegExp('[' + VOWELS + ']');
+  const consonantRunRe = new RegExp('[^' + VOWELS + ']{6,}', 'u');
+  for (const w of letters) {
+    if (BAD_WORDS.has(w)) return NAME_ERROR;
+    if (MASHES.some(m => w.includes(m))) return NAME_ERROR;
+    if (w.length >= 3 && !vowelRe.test(w)) return NAME_ERROR;
+    if (consonantRunRe.test(w)) return NAME_ERROR;
+  }
+  return null;
+}
+
 async function loadStats() {
   try {
     const r = await fetch('/api/stats');
@@ -191,9 +229,10 @@ $('form').addEventListener('submit', async e => {
     comment: $('comment').value.trim(),
     website: $('website').value
   };
-  if (!body.name) {
+  const nameErr = validateName(body.name);
+  if (nameErr) {
     msg.className = 'msg err';
-    msg.textContent = 'Please enter your name.';
+    msg.textContent = nameErr;
     return;
   }
   if (!/^[a-z0-9._-]+@salesian\.vic\.edu\.au$/i.test(body.email)) {
@@ -212,8 +251,10 @@ $('form').addEventListener('submit', async e => {
     if (r.ok) {
       msg.className = 'msg ok';
       msg.textContent = d.pending
-        ? 'Almost done! We emailed you a link. Open it and press Confirm to count your YES. Check your junk folder too.'
-        : 'Thank you! Your YES has been counted.';
+        ? 'Almost done! We emailed you a link. Open it and press Confirm. Check your junk folder too. Your YES counts once it is approved.'
+        : (d.awaiting
+            ? 'Thanks! Your YES has been sent. It will count once it is approved.'
+            : 'Thank you! Your YES has been counted.');
       $('form').reset();
       loadStats();
     } else {
@@ -235,7 +276,7 @@ $('form').addEventListener('submit', async e => {
   if (p === '1') {
     b.style.background = '#e6f7e9';
     b.style.color = '#1d5a2a';
-    b.textContent = 'Confirmed! Your YES has been counted. Thank you!';
+    b.textContent = 'Email confirmed! Your YES will count once it is approved. Thank you!';
   } else {
     b.style.background = '#fde8e8';
     b.style.color = '#8a1f1f';
