@@ -181,6 +181,123 @@ function validateName(raw) {
   return null;
 }
 
+// ---------- Celebration: confetti + little donuts falling when the goal is reached ----------
+let party = null;
+function startParty() {
+  if (party) return;
+  if (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+  const cv = document.createElement('canvas');
+  cv.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:50';
+  document.body.appendChild(cv);
+  const ctx = cv.getContext('2d');
+  let W = 0, H = 0, raf = 0, last = 0, donutTimer = 0;
+  const parts = [];
+  const COLORS = ['#ff7eb6', '#ffe066', '#7fd6ff', '#8be28b', '#ffffff', '#c79bff', '#ff9f43'];
+  const ICING = ['#ff7eb6', '#5a2f1b', '#7fd6ff', '#c79bff', '#8be28b'];
+  const TAU = Math.PI * 2;
+  const rnd = (a, b) => a + Math.random() * (b - a);
+
+  function size() {
+    const dpr = window.devicePixelRatio || 1;
+    W = window.innerWidth;
+    H = window.innerHeight;
+    cv.width = W * dpr;
+    cv.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  size();
+  window.addEventListener('resize', size);
+
+  function confetti(y) {
+    parts.push({
+      k: 'c', x: rnd(0, W), y: y, vx: rnd(-30, 30), vy: rnd(70, 170),
+      w: rnd(6, 11), h: rnd(10, 16), rot: rnd(0, TAU), vr: rnd(-6, 6),
+      color: COLORS[(Math.random() * COLORS.length) | 0], sway: rnd(0, TAU)
+    });
+  }
+  function donut(y) {
+    parts.push({
+      k: 'd', x: rnd(0, W), y: y, vx: rnd(-20, 20), vy: rnd(60, 130),
+      r: rnd(11, 20), rot: rnd(0, TAU), vr: rnd(-2, 2),
+      icing: ICING[(Math.random() * ICING.length) | 0], sway: rnd(0, TAU)
+    });
+  }
+  // Starting burst, spread above the screen so it rains down
+  for (let i = 0; i < 140; i++) confetti(rnd(-H, 0));
+  for (let i = 0; i < 12; i++) donut(rnd(-H * 0.8, -20));
+
+  function drawDonut(p) {
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.rot);
+    ctx.beginPath();
+    ctx.arc(0, 0, p.r, 0, TAU);
+    ctx.arc(0, 0, p.r * 0.3, 0, TAU);
+    ctx.fillStyle = '#f2b872';
+    ctx.fill('evenodd');
+    ctx.beginPath();
+    ctx.arc(0, 0, p.r * 0.86, 0, TAU);
+    ctx.arc(0, 0, p.r * 0.3, 0, TAU);
+    ctx.fillStyle = p.icing;
+    ctx.fill('evenodd');
+    ctx.lineCap = 'round';
+    ctx.lineWidth = Math.max(1.5, p.r * 0.12);
+    [['#ffffff', 0.6, 0.4], ['#ffe066', -0.5, 0.55], ['#7fd6ff', 0.1, -0.65], ['#ffffff', -0.65, -0.2]].forEach(s => {
+      const x = s[1] * p.r, y = s[2] * p.r;
+      ctx.strokeStyle = s[0];
+      ctx.beginPath();
+      ctx.moveTo(x - p.r * 0.12, y - p.r * 0.06);
+      ctx.lineTo(x + p.r * 0.12, y + p.r * 0.06);
+      ctx.stroke();
+    });
+    ctx.restore();
+  }
+
+  function frame(t) {
+    const dt = Math.min(0.05, (t - (last || t)) / 1000);
+    last = t;
+    ctx.clearRect(0, 0, W, H);
+
+    donutTimer += dt;
+    if (donutTimer > 0.35 && parts.length < 220) { donutTimer = 0; donut(-30); }
+    if (Math.random() < 0.4 && parts.length < 220) confetti(-20);
+
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const p = parts[i];
+      p.sway += dt * 3;
+      p.x += (p.vx + Math.sin(p.sway) * 25) * dt;
+      p.y += p.vy * dt;
+      p.rot += p.vr * dt;
+      if (p.y > H + 40) { parts.splice(i, 1); continue; }
+      if (p.k === 'd') {
+        drawDonut(p);
+      } else {
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(p.rot);
+        ctx.scale(1, Math.cos(p.sway));
+        ctx.fillStyle = p.color;
+        ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+        ctx.restore();
+      }
+    }
+    raf = requestAnimationFrame(frame);
+  }
+  raf = requestAnimationFrame(frame);
+
+  party = {
+    stop() {
+      cancelAnimationFrame(raf);
+      window.removeEventListener('resize', size);
+      cv.remove();
+    }
+  };
+}
+function stopParty() {
+  if (party) { party.stop(); party = null; }
+}
+
 async function loadStats() {
   try {
     const r = await fetch('/api/stats');
@@ -188,12 +305,16 @@ async function loadStats() {
     $('count').textContent = d.count.toLocaleString();
     $('fill').style.width = Math.min(100, d.count / d.goal * 100) + '%';
     $('yeslabel').textContent = (d.count === 1 ? 'person has' : 'people have') + ' said YES to donuts in the canteen';
-    $('goal').textContent = 'Goal: ' + d.goal.toLocaleString() + ' yes votes';
+    const reached = d.count >= d.goal;
+    $('goal').textContent = reached
+      ? 'We hit the goal of ' + d.goal.toLocaleString() + '! Thank you!'
+      : 'Goal: ' + d.goal.toLocaleString() + ' yes votes';
     PAUSED = !!d.paused;
     $('paused').style.display = PAUSED ? 'block' : 'none';
     $('btn').disabled = PAUSED;
     $('soon').style.display = PAUSED ? 'flex' : 'none';
     document.body.classList.toggle('closed', PAUSED);
+    if (reached && !PAUSED) startParty(); else stopParty();
     const list = $('list');
     list.innerHTML = '';
     if (!d.recent.length) {
