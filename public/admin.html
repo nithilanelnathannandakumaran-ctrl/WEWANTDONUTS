@@ -68,6 +68,23 @@
     </div>
 
     <div class="card">
+      <h3 style="margin:0 0 8px">Announcement</h3>
+      <div class="small" id="annCurrent" style="margin-bottom:10px"></div>
+      <textarea id="annText" maxlength="300" placeholder="Write an announcement for the petition page..." style="width:100%;min-height:70px;padding:11px 12px;border:2px solid #e8d6c0;border-radius:10px;font:inherit;background:#fffdf9"></textarea>
+      <div class="row" style="margin-top:10px">
+        <span class="small">Show for</span>
+        <input id="annAmount" type="number" min="1" max="999" value="1" style="flex:none;min-width:0;width:80px">
+        <select id="annUnit" style="padding:11px 12px;border:2px solid #e8d6c0;border-radius:10px;font:inherit;background:#fffdf9">
+          <option value="hours">hours</option>
+          <option value="days" selected>days</option>
+          <option value="weeks">weeks</option>
+        </select>
+        <button id="annPost" type="button">Post announcement</button>
+        <button class="ghost" id="annClear" type="button" hidden>Remove</button>
+      </div>
+    </div>
+
+    <div class="card">
       <input id="search" placeholder="Search name, email or comment...">
       <div class="tablewrap">
         <table>
@@ -129,6 +146,11 @@ async function load() {
   if (document.activeElement !== $('goalInput')) $('goalInput').value = res.data.goal;
   IS_APPROVER = !!res.data.isApprover;
   $('approveAll').hidden = !(IS_APPROVER && res.data.awaiting > 0);
+  const ann = res.data.announcement;
+  $('annCurrent').textContent = ann
+    ? 'Showing now (until ' + new Date(ann.until).toLocaleString() + '): ' + ann.text
+    : 'No announcement is showing.';
+  $('annClear').hidden = !ann;
   render();
   return true;
 }
@@ -227,6 +249,22 @@ $('loginForm').addEventListener('submit', async e => {
 
 $('search').addEventListener('input', render);
 $('refresh').onclick = load;
+$('annPost').onclick = async () => {
+  const text = $('annText').value.trim();
+  const amount = Number($('annAmount').value);
+  if (!text) { alert('Write the announcement first.'); return; }
+  if (!Number.isInteger(amount) || amount < 1) { alert('Enter how long to show it (a whole number).'); return; }
+  const res = await api('/api/admin/announce', {
+    method: 'POST',
+    body: JSON.stringify({ text, amount, unit: $('annUnit').value })
+  });
+  if (res.ok) { $('annText').value = ''; load(); } else alert(res.data.error || 'Could not post the announcement.');
+};
+$('annClear').onclick = async () => {
+  if (!confirm('Remove the announcement now?')) return;
+  const res = await api('/api/admin/announce', { method: 'POST', body: JSON.stringify({ clear: true }) });
+  if (res.ok) load(); else alert(res.data.error || 'Could not remove it.');
+};
 $('approveAll').onclick = async () => {
   if (!confirm('Approve ALL requests waiting for approval?')) return;
   const res = await api('/api/admin/approve', { method: 'POST', body: JSON.stringify({ all: true }) });
