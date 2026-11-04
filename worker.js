@@ -128,6 +128,18 @@ async function getGoal(env) {
   return Number.isInteger(n) && n >= 1 ? n : DEFAULT_GOAL;
 }
 
+// The announcement shown on the petition page. It disappears by itself when its time is up.
+async function getAnnouncement(env) {
+  const rows = await env.DB.prepare(
+    "SELECT key, value FROM settings WHERE key IN ('announce_text', 'announce_until')"
+  ).all();
+  const map = {};
+  for (const r of rows.results) map[r.key] = r.value;
+  const until = parseInt(map.announce_until, 10);
+  if (!map.announce_text || !Number.isFinite(until) || until <= Date.now()) return null;
+  return { text: map.announce_text, until };
+}
+
 function newToken() {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
@@ -285,7 +297,13 @@ export default {
       const recent = await env.DB.prepare(
         'SELECT name, comment FROM signatures WHERE confirmed = 1 AND approved = 1 AND blocked = 0 ORDER BY id DESC LIMIT 20'
       ).all();
-      return json({ count: total.c, goal: await getGoal(env), paused: await isPaused(env), recent: recent.results });
+      return json({
+        count: total.c,
+        goal: await getGoal(env),
+        paused: await isPaused(env),
+        announcement: await getAnnouncement(env),
+        recent: recent.results,
+      });
     }
 
     if (request.method === 'POST' && path === '/api/sign') {
@@ -422,6 +440,7 @@ export default {
         blocked: blockedCount,
         isApprover: approver,
         paused: await isPaused(env),
+        announcement: await getAnnouncement(env),
         emailOn: emailEnabled(env),
         rows,
       });
@@ -438,6 +457,41 @@ export default {
       if (blockedByGuard) return blockedByGuard;
       await env.DB.prepare('DELETE FROM signatures WHERE id = ?').bind(id).run();
       return json({ ok: true });
+    }
+
+    // Post (or remove) an announcement that shows on the petition page for a set time.
+    if (path === '/api/admin/announce' && request.method === 'POST') {
+      const denied = await checkAdmin(request, env);
+      if (denied) return denied;
+      await ensureSchema(env);
+      let body;
+      try { body = await request.json(); } catch { return json({ error: 'Invalid request.' }, 400); }
+
+      if (body.clear) {
+        await env.DB.prepare(
+          "DELETE FROM settings WHERE key IN ('announce_text', 'announce_until')"
+        ).run();
+        return json({ ok: true });
+      }
+
+      const text = String(body.text || '').trim().slice(0, 300);
+      const amount = Number(body.amount);
+      const unitMs = { hours: 3600000, days: 86400000, weeks: 604800000 }[body.unit];
+      if (!text) return json({ error: 'Write the announcement first.' }, 400);
+      if (!unitMs) return json({ error: 'Pick hours, days or weeks.' }, 400);
+      if (!Number.isInteger(amount) || amount < 1 || amount * unitMs > 366 * 86400000) {
+        return json({ error: 'Pick a whole number of hours, days or weeks (up to a year).' }, 400);
+      }
+      const until = Date.now() + amount * unitMs;
+      await env.DB.batch([
+        env.DB.prepare(
+          "INSERT INTO settings (key, value) VALUES ('announce_text', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        ).bind(text),
+        env.DB.prepare(
+          "INSERT INTO settings (key, value) VALUES ('announce_until', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        ).bind(String(until)),
+      ]);
+      return json({ ok: true, until });
     }
 
     // Approve a waiting request (or all of them). Only the approver can do this.
