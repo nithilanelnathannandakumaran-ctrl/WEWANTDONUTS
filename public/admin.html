@@ -58,6 +58,7 @@
           </div>
         </div>
         <div class="row">
+          <button id="approveAll" type="button" hidden>Approve all</button>
           <button id="pause" type="button">Pause signups</button>
           <button class="ghost" id="refresh" type="button">Refresh</button>
           <button class="ghost" id="csv" type="button">Download CSV</button>
@@ -86,7 +87,11 @@ let NAME = '';
 let DATA = [];
 let LAST_ERR = '';
 let PAUSED = false;
-const statusOf = r => r.blocked ? 'Blocked' : (r.confirmed ? 'Confirmed' : 'Pending');
+let IS_APPROVER = false;
+const statusOf = r => r.blocked ? 'Blocked'
+  : !r.confirmed ? 'Pending email'
+  : !r.approved ? 'Awaiting approval'
+  : 'Approved';
 
 try {
   KEY = sessionStorage.getItem('adminKey') || '';
@@ -115,12 +120,15 @@ async function load() {
   $('total').textContent = res.data.count + ' yes' + (res.data.count === 1 ? '' : ' votes');
   $('goalText').textContent = 'Goal: ' + res.data.goal +
     (res.data.pending ? '  |  ' + res.data.pending + ' waiting to confirm their email' : '') +
+    (res.data.awaiting ? '  |  ' + res.data.awaiting + ' AWAITING YOUR APPROVAL' : '') +
     (res.data.blocked ? '  |  ' + res.data.blocked + ' blocked' : '') +
     (res.data.emailOn ? '' : '  |  confirmation emails are OFF') +
     (res.data.paused ? '  |  SIGNUPS ARE PAUSED' : '');
   PAUSED = !!res.data.paused;
   $('pause').textContent = PAUSED ? 'Resume signups' : 'Pause signups';
   if (document.activeElement !== $('goalInput')) $('goalInput').value = res.data.goal;
+  IS_APPROVER = !!res.data.isApprover;
+  $('approveAll').hidden = !(IS_APPROVER && res.data.awaiting > 0);
   render();
   return true;
 }
@@ -132,6 +140,7 @@ function render() {
   const list = DATA.filter(r =>
     !q || [r.name, r.email, r.comment].join(' ').toLowerCase().includes(q)
   );
+  list.sort((a, b) => (a.approved - b.approved) || (b.id - a.id));
   $('empty').hidden = list.length > 0;
   list.forEach(r => {
     const tr = document.createElement('tr');
@@ -143,6 +152,31 @@ function render() {
     });
     const td = document.createElement('td');
     td.style.whiteSpace = 'nowrap';
+
+    // A request waiting for approval: Approve or Reject (only the approver sees these).
+    if (!r.approved && r.confirmed && !r.blocked) {
+      const yes = document.createElement('button');
+      yes.textContent = 'Approve';
+      yes.style.cssText = 'padding:6px 12px;font-size:.85rem;margin-right:6px';
+      yes.onclick = async () => {
+        const res = await api('/api/admin/approve', { method: 'POST', body: JSON.stringify({ id: r.id }) });
+        if (res.ok) load(); else alert(res.data.error || 'Could not approve.');
+      };
+      const no = document.createElement('button');
+      no.className = 'del';
+      no.textContent = 'Reject';
+      no.onclick = async () => {
+        if (!confirm('Reject and delete the request from ' + r.name + ' (' + r.email + ')?')) return;
+        const res = await api('/api/admin/delete', { method: 'POST', body: JSON.stringify({ id: r.id }) });
+        if (res.ok) load(); else alert(res.data.error || 'Could not reject.');
+      };
+      td.appendChild(yes);
+      td.appendChild(no);
+      tr.appendChild(td);
+      body.appendChild(tr);
+      return;
+    }
+
     const blk = document.createElement('button');
     blk.className = 'ghost';
     blk.style.cssText = 'padding:6px 10px;font-size:.85rem;margin-right:6px';
@@ -193,6 +227,11 @@ $('loginForm').addEventListener('submit', async e => {
 
 $('search').addEventListener('input', render);
 $('refresh').onclick = load;
+$('approveAll').onclick = async () => {
+  if (!confirm('Approve ALL requests waiting for approval?')) return;
+  const res = await api('/api/admin/approve', { method: 'POST', body: JSON.stringify({ all: true }) });
+  if (res.ok) load(); else alert(res.data.error || 'Could not approve.');
+};
 $('goalSave').onclick = async () => {
   const n = Number($('goalInput').value);
   if (!Number.isInteger(n) || n < 1 || n > 100000) {
